@@ -1,0 +1,321 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(readxl)
+bankdata = read.csv(file.choose())
+# removing Id & Zip Code variables from Dataset
+bankdata = bankdata[, -c(1,5)]
+str(bankdata)
+dim(bankdata)
+```
+
+
+```{r}
+## Converting multiple columns into factor columns
+col = c("Education","Personal.Loan","Securities.Account", "CD.Account", "Online", "CreditCard")
+bankdata[col] = lapply(bankdata[col], factor)
+
+## Converting Education into ordered factors
+bankdata$Education = factor(bankdata$Education, levels = c("1", "2", "3"), order = TRUE)
+
+str(bankdata)
+#report(bankdata)
+#Final Report after Data treatemant
+#install.packages("Data explorer")
+#library("DataExplorer")
+#DataExplorer::create_report(bankdata)
+
+#Null(Missing) Value Treatement and data treatement
+#Family Member Value Treatment. 18 missing value should be replaced with 1 as the lowest number of members a person can have is he/she themselves
+FamilySummary=table(bankdata$`Family members`)
+FamilySummary
+```
+
+
+```{r}
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(lattice)
+library(DataExplorer)
+library(grDevices)
+library(factoextra)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(ranger)
+library(Metrics)
+library(ROCit)
+library(kableExtra)
+
+## Changing the name of few variables for ease of use
+bankdata = bankdata%>% rename(Age = Age..in.years., Experience = Experience..in.years.,
+                          Income = Income..in.K.month.)
+
+## check for missing values
+sapply(bankdata, function(x){sum(is.na(x))}) ## checking columns which have missing values
+bankdata[is.na(bankdata)] = 1
+summary(bankdata)
+# check again after replacing with 1
+
+#Experience has negative values 
+summary(bankdata$`Experience (in years)`)
+## checking for rows having negative values as Experience
+head(bankdata[bankdata$`Experience (in years)`<0,])  
+bankdata$Experience = abs(bankdata$Experience)
+
+
+```
+
+
+
+```{r}
+
+names(bankdata)
+table(bankdata$Personal.Loan)
+prop.table(table(bankdata$Personal.Loan))
+
+```
+
+```{r}
+library(caTools)
+
+set.seed(3021)
+
+split = sample.split(bankdata$Personal.Loan, SplitRatio = 0.80)
+traindata = subset(bankdata, split == TRUE)
+testdata = subset(bankdata, split == FALSE)
+
+prop.table(table(traindata$Personal.Loan))
+prop.table(table(testdata$Personal.Loan))
+```
+
+```{r}
+dim(traindata)
+```
+
+## Selection of parameters for RF using thumb rule
+```{r}
+mtry_1 = sqrt (12)
+mtry_1
+
+ntree_1 = 0.2 * 4000
+ntree_1
+```
+## Run RF model 
+```{r}
+library(randomForest)
+set.seed(3021)
+
+RF1 = randomForest(Personal.Loan ~ ., data = traindata, ntree_1 = 800, mtry_1 = 3, importance = TRUE, set.seed(3021))
+
+print(RF1)
+```
+
+#changing cut off
+```{r}
+set.seed(3021)
+
+RF2 = randomForest(Personal.Loan ~ ., data = traindata, ntree_1 = 800, mtry_1 = 3, importance = TRUE, cutoff = c(0.6,0.4) ,set.seed(3021))
+RF2
+
+```
+
+#Variable importance (Relative importance)
+```{r}
+varImpPlot(RF2)
+
+```
+
+```{r}
+## Predict using the RF2 model
+traindata$predict.loanclass=predict(RF2,traindata,type="class")
+traindata$predict.score=predict(RF2,traindata)
+
+## Creating the confusion matrix
+con_matrix=with(traindata,table(Personal.Loan,predict.loanclass))
+con_matrix
+
+```
+
+#traindata RF model measures
+```{r}
+TN_train = con_matrix[1,1]
+TP_train = con_matrix[2,2]
+FN_train = con_matrix[2,1]
+FP_train = con_matrix[1,2]
+
+train_acc = (TN_train+TP_train)/(TN_train+TP_train+FN_train+FP_train)
+train_acc
+
+train_sens = TP_train/(TP_train+FN_train)
+train_sens
+
+
+train_spec = TN_train/(TN_train+FP_train)
+train_spec
+```
+#testdata model measures
+```{r}
+## Predict using the RF model
+
+testdata$predict.loanclass = predict(RF2, testdata, type = "class")
+testdata$predict.score=predict(RF2,testdata)
+
+
+## Creating the confusion matrix
+conmatrix_test=with(testdata,table(Personal.Loan,predict.loanclass))
+conmatrix_test
+
+
+TN_test = conmatrix_test[1,1]
+TP_test = conmatrix_test[2,2]
+FN_test = conmatrix_test[2,1]
+FP_test = conmatrix_test[1,2]
+
+test_acc = (TN_test+TP_test)/(TN_test+TP_test+FN_test+FP_test)
+test_acc
+
+test_sens = TP_test/(TP_test+FN_test)
+test_sens
+
+
+test_spec = TN_test/(TN_test+FP_test)
+test_spec
+```
+
+```{r}
+df_results_train = data.frame(train_acc, train_sens, train_spec)
+names(df_results_train) = c("ACC", "SENS", "SPEC")
+df_results_test = data.frame(test_acc, test_sens, test_spec)
+names(df_results_test) = c("ACC", "SENS", "SPEC")
+
+?rbind
+df_fin =rbind(df_results_train, df_results_test)
+row.names(df_fin) = c('RF_tree_full_train', 'RF_tree_full_test')
+df_fin
+```
+
+```{r}
+#remove predicted score and class before running other models
+traindata$predict.loanclass = NULL
+traindata$predict.score=NULL
+testdata$predict.loanclass = NULL
+testdata$predict.score=NULL
+```
+```{r}
+library(e1071)
+set.seed(3021)
+tuned.RandFors = tuneRF(x = traindata[, -c(8,13,14)], y= traindata$Personal.Loan, mtryStart = mtry_1, stepFactor = 1.5, ntreeTry = 501, improve = 0.01, trace=TRUE, plot=TRUE, doBest=TRUE, importance=TRUE,)
+
+print(tuned.RandFors)
+
+```
+
+#variable importance of Tuned model
+```{r}
+varImpPlot(tuned.RandFors)
+```
+
+
+
+
+```{r}
+## Predict using the Tuned.RandFords
+traindata$predict.loanclass=predict(tuned.RandFors,traindata,type="class")
+traindata$predict.score=predict(tuned.RandFors,traindata)
+
+View(traindata)
+
+## Creating the confusion matrix
+con_matrix=with(traindata,table(Personal.Loan,predict.loanclass))
+con_matrix
+```
+
+
+```{r}
+TN_train = con_matrix[1,1]
+TP_train = con_matrix[2,2]
+FN_train = con_matrix[2,1]
+FP_train = con_matrix[1,2]
+
+train_acc = (TN_train+TP_train)/(TN_train+TP_train+FN_train+FP_train)
+train_acc
+
+train_sens = TP_train/(TP_train+FN_train)
+train_sens
+
+
+train_spec = TN_train/(TN_train+FP_train)
+train_spec
+```
+
+```{r}
+## Predict using the RF model
+
+testdata$predict.loanclass = predict(tuned.RandFors, testdata, type = "class")
+testdata$predict.score=predict(tuned.RandFors,testdata)
+
+
+## Creating the confusion matrix
+conmatrix_test=with(testdata,table(Personal.Loan,predict.loanclass))
+conmatrix_test
+
+
+TN_test = conmatrix_test[1,1]
+TP_test = conmatrix_test[2,2]
+FN_test = conmatrix_test[2,1]
+FP_test = conmatrix_test[1,2]
+
+test_acc = (TN_test+TP_test)/(TN_test+TP_test+FN_test+FP_test)
+test_acc
+
+test_sens = TP_test/(TP_test+FN_test)
+test_sens
+
+
+test_spec = TN_test/(TN_test+FP_test)
+test_spec
+```
+
+
+```{r}
+df_results_train = data.frame(train_acc, train_sens, train_spec)
+names(df_results_train) = c("ACC", "SENS", "SPEC")
+df_results_test = data.frame(test_acc, test_sens, test_spec)
+names(df_results_test) = c("ACC", "SENS", "SPEC")
+
+?rbind
+df_fin =rbind(df_fin,df_results_train, df_results_test)
+row.names(df_fin) = c('RF2_train', 'RF2_test', 'TuneRF_train', 'TuneRF_test')
+df_fin
+
+```
+
+
+
+
+```{r}
+library(pROC)
+traindata$predict.score=predict(tuned.RandFors,traindata, type = "prob")
+traindata$predict.score
+roc_obj = roc(traindata$Personal.Loan, traindata$predict.score[,2])
+
+
+plot(roc_obj, print.auc = T)
+
+
+testdata$predict.score=predict(tuned.RandFors,testdata, type = "prob")
+testdata$predict.score
+roc_obj = roc(testdata$Personal.Loan, testdata$predict.score[,2])
+
+
+plot(roc_obj, print.auc = T)
+```
+
